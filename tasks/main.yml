@@ -1,0 +1,136 @@
+---
+# tasks file for sonarqube
+
+- name: Directories are present
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: 0777
+    owner: '200'
+    group: '200'
+  with_items:
+    - "{{ directories }}"
+  tags: [sonarqube]
+
+- name: Container db is running
+  docker_container:
+    name: postgresdb
+    image: postgres
+    ports: 
+    - '5432:5432'
+    networks:
+    - name: protec-net
+    volumes:
+    - '{{ db_volume }}/postgresql:/var/lib/postgresql'
+    - '{{ db_volume }}/postgresql_data:/var/lib/postgresql/data'
+    memory: 4G
+    restart_policy: always
+    env:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: "{{ admin.pass }}"
+      POSTGRES_DB: sonarqube
+  tags: [sonarqube]
+
+- name: Container Sonar is running
+  docker_container:
+    name: sonarqube
+    image: sonarqube
+    ports: 
+    - '{{ sonarqube.port }}:9000'
+    networks:
+    - name: protec-net
+    volumes:
+    - "{{ sonar_volume }}/data:/opt/sonarqube/data"
+    - "{{ sonar_volume }}/extensions:/opt/sonarqube/extensions"
+    - "{{ sonar_volume }}/logs:/opt/sonarqube/logs"
+    memory: 4G
+    restart_policy: always
+    env:
+      sonar.jdbc.username: sonar
+      sonar.jdbc.password: "{{ admin.pass }}"
+      sonar.jdbc.url: "jdbc:postgresql://postgresdb:5432/sonarqube"
+      HTTP_PROXYHOST: "{{ proxy.host }}"
+      HTTPS_PROXYHOST:  "{{ proxy.host }}"
+      HTTP_PROXYPORT:  "{{ proxy.port }}"
+      HTTPS_PROXYPORT:  "{{ proxy.port }}"
+  tags: [sonarqube]
+
+
+- name: Check Sonarqube is up and running
+  uri:
+    url: http://{{ sonarqube.host }}:{{ sonarqube.port }}
+    validate_certs: no
+    remote_src: yes
+  register: result
+  until: result.status == 200
+  retries: 6 # 6 * 10 seconds = 1 minute
+  delay: 10 # Every 10 seconds
+  tags: [sonarqube]
+
+
+- name: Download Sonarqube plugins
+  get_url:
+    url: "{{ item }}"
+    dest: "{{ sonar_volume }}/extensions/downloads/"
+    timeout: 50
+    use_proxy: yes
+  with_items:
+    - "{{ plugins }}"
+  retries: 3
+  environment: "{{ proxy_env }}"
+  tags: 
+  - sonarqube
+  - config
+
+
+- name: Change admin password
+  uri: 
+    url: http://{{ sonarqube.host }}:{{ sonarqube.port }}/api/users/change_password
+    method: POST
+    body_format: form-urlencoded
+    body: 
+      login: admin
+      previousPassword: admin
+      password: "{{ sonarqube.pass }}"
+    force_basic_auth: yes
+    status_code: [200, 204]
+    url_username: admin
+    url_password: admin
+  tags:
+    - install
+    - sonarqube
+
+- name: Restart Sonarqube to install plugins
+  uri: 
+    url: http://{{ sonarqube.host }}:{{ sonarqube.port }}/api/system/restart
+    method: POST
+    force_basic_auth: yes
+    url_username: "{{ sonarqube.user }}"
+    url_password: "{{ sonarqube.pass }}"
+  tags:
+    - config
+    - sonarqube
+
+- name: Check Sonarqube is up and running
+  uri:
+    url: http://{{ sonarqube.host }}:{{ sonarqube.port }}
+    validate_certs: no
+    remote_src: yes
+  register: result
+  until: result.status == 200
+  retries: 6 # 6 * 10 seconds = 1 minute
+  delay: 10 # Every 10 seconds
+  tags: 
+    - config
+    - sonarqube
+
+
+- name: Pause for 60 seconds
+  pause:
+    seconds: 60
+  tags: 
+    - config
+    - sonarqube
+
+  
+
